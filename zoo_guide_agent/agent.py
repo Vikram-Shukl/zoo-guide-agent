@@ -1,20 +1,15 @@
 import os
 import logging
+import wikipedia
 from dotenv import load_dotenv
 from google.adk import Agent
 from google.adk.agents import SequentialAgent
 from google.adk.tools.tool_context import ToolContext
-from google.adk.tools.langchain_tool import LangchainTool
-from langchain_community.tools import WikipediaQueryRun
-from langchain_community.utilities import WikipediaAPIWrapper
 
-# Simple logging setup (no Google Cloud required)
 logging.basicConfig(level=logging.INFO)
-
 load_dotenv()
 
 model_name = os.getenv("MODEL", "gemini-2.5-flash")
-
 
 def add_prompt_to_state(
     tool_context: ToolContext, prompt: str
@@ -24,32 +19,26 @@ def add_prompt_to_state(
     logging.info(f"[State updated] Added to PROMPT: {prompt}")
     return {"status": "success"}
 
-
-wikipedia_tool = LangchainTool(
-    tool=WikipediaQueryRun(api_wrapper=WikipediaAPIWrapper())
-)
+def search_wikipedia(query: str) -> dict[str, str]:
+    """Search Wikipedia for information about animals and return a summary."""
+    try:
+        result = wikipedia.summary(query, sentences=5)
+        return {"result": result}
+    except Exception as e:
+        return {"result": f"Could not find information: {str(e)}"}
 
 comprehensive_researcher = Agent(
     name="comprehensive_researcher",
     model=model_name,
-    description="The primary researcher that can access both internal zoo data and external knowledge from Wikipedia.",
+    description="Researcher that searches Wikipedia for animal information.",
     instruction="""
-You are a helpful research assistant. Your goal is to fully answer the user's PROMPT.
-
-You have access to two tools:
-1. A tool for getting specific data about animals AT OUR ZOO (names, ages, locations).
-2. A tool for searching Wikipedia for general knowledge (facts, lifespan, diet, habitat).
-
-First, analyze the user's PROMPT.
-- If the prompt can be answered by only one tool, use that tool.
-- If the prompt is complex and requires information from both the zoo's database AND Wikipedia,
-  you MUST use both tools to gather all necessary information.
-- Synthesize the results from the tool(s) you use into preliminary data outputs.
+You are a helpful research assistant. Answer the user's PROMPT by searching Wikipedia.
+Use the search_wikipedia tool to find relevant information.
 
 PROMPT:
 { PROMPT }
 """,
-    tools=[wikipedia_tool],
+    tools=[search_wikipedia],
     output_key="research_data"
 )
 
@@ -58,13 +47,8 @@ response_formatter = Agent(
     model=model_name,
     description="Synthesizes all information into a friendly, readable response.",
     instruction="""
-You are the friendly voice of the Zoo Tour Guide. Your task is to take the
-RESEARCH_DATA and present it to the user in a complete and helpful answer.
-
-- First, present the specific information from the zoo (like names, ages, and where to find them).
-- Then, add the interesting general facts from the research.
-- If some information is missing, just present the information you have.
-- Be conversational and engaging.
+You are the friendly voice of the Zoo Tour Guide. Take the RESEARCH_DATA
+and present it to the user in a complete, helpful, and engaging way.
 
 RESEARCH_DATA:
 { research_data }
@@ -74,10 +58,7 @@ RESEARCH_DATA:
 tour_guide_workflow = SequentialAgent(
     name="tour_guide_workflow",
     description="The main workflow for handling a user's request about an animal.",
-    sub_agents=[
-        comprehensive_researcher,
-        response_formatter,
-    ]
+    sub_agents=[comprehensive_researcher, response_formatter]
 )
 
 root_agent = Agent(
@@ -85,9 +66,9 @@ root_agent = Agent(
     model=model_name,
     description="The main entry point for the Zoo Tour Guide.",
     instruction="""
-- Let the user know you will help them learn about the animals we have in the zoo.
-- When the user responds, use the 'add_prompt_to_state' tool to save their response.
-  After using the tool, transfer control to the 'tour_guide_workflow' agent.
+Welcome the user to the Zoo Tour Guide!
+When the user asks about an animal, use 'add_prompt_to_state' tool to save their query,
+then transfer control to 'tour_guide_workflow'.
 """,
     tools=[add_prompt_to_state],
     sub_agents=[tour_guide_workflow]
